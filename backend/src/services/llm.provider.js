@@ -18,8 +18,16 @@ function getApiKey() {
   return key;
 }
 
-function getModel() {
-  return env.geminiModel || env.llmModel || "gemini-2.0-flash";
+// Model preference order: env override → flash-lite (higher free-tier quota) → flash
+const MODEL_PREFERENCE = [
+  env.geminiModel,
+  env.llmModel,
+  "gemini-2.0-flash-lite",
+  "gemini-2.0-flash",
+].filter(Boolean);
+
+function getModel(index = 0) {
+  return MODEL_PREFERENCE[Math.min(index, MODEL_PREFERENCE.length - 1)];
 }
 
 // ---------------------------------------------------------------------------
@@ -28,11 +36,9 @@ function getModel() {
 // Falls back to direct Gemini REST if LLM_API_URL is not set.
 // ---------------------------------------------------------------------------
 
-async function callGeminiRaw(prompt, { temperature = 0.5, isJson = true } = {}) {
+async function callGeminiRaw(prompt, { temperature = 0.5, isJson = true, modelIndex = 0 } = {}) {
   const apiKey = getApiKey();
-  const model = getModel();
-
-  // Build the REST URL — prefer the direct Gemini generateContent endpoint
+  const model = getModel(modelIndex);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   const body = {
@@ -40,6 +46,7 @@ async function callGeminiRaw(prompt, { temperature = 0.5, isJson = true } = {}) 
     generationConfig: {
       temperature,
       candidateCount: 1,
+      maxOutputTokens: 256,
       ...(isJson ? { responseMimeType: "application/json" } : {}),
     },
   };
@@ -52,6 +59,12 @@ async function callGeminiRaw(prompt, { temperature = 0.5, isJson = true } = {}) 
 
   if (!resp.ok) {
     const errText = await resp.text();
+    // On 429 try next model in preference list once before giving up
+    if (resp.status === 429 && modelIndex < MODEL_PREFERENCE.length - 1) {
+      console.warn(`[llm] 429 on ${model}, retrying with ${getModel(modelIndex + 1)}`);
+      await new Promise(r => setTimeout(r, 1500));
+      return callGeminiRaw(prompt, { temperature, isJson, modelIndex: modelIndex + 1 });
+    }
     throw new Error(`Gemini API error ${resp.status}: ${errText}`);
   }
 
@@ -118,74 +131,39 @@ function normalizeMime(rawMime) {
 // ---------------------------------------------------------------------------
 
 function buildInterviewerPrompt({ submission, conversationHistory, latestUserMessage, coveredThemes, policy, questionNumber }) {
-  const contentLabel =
-    submission.inputType === "image" ? "AI-generated image"
-    : submission.inputType === "audio" ? "AI-generated audio"
-    : submission.inputType === "video" ? "AI-generated video"
-    : submission.inputType === "pdf" ? "AI-generated document"
-    : submission.inputType === "code" ? "AI-generated code"
-    : "AI-generated text response";
+  // Keep last 6 turns max to stay within free-tier token limits
+  const recentHistory = conversationHistory.slice(-6);
+  const historyBlock = recentHistory.length > 0
+    ? recentHistory.map(m => `${m.role === "assistant" ? "I" : "User"}: ${m.content.slice(0, 200)}`).join("\n")
+    : "";
 
-  // Format the conversation so Gemini sees what was already said
-  const historyBlock = conversationHistory.length > 0
-    ? conversationHistory.map((m) => {
-        const role = m.role === "assistant" ? "INTERVIEWER" : "USER";
-        return `${role}: ${m.content}`;
-      }).join("\n")
-    : "(This is the start of the interview.)";
+  const contentSnippet = submission.uploadedFileUrl
+    ? `[Uploaded ${submission.inputType} file]`
+    : (submission.generatedContent ?? "").slice(0, 300);
 
-  const coveredBlock = coveredThemes.length > 0
-    ? `Already explored: ${coveredThemes.join(", ")}. Do NOT revisit these.`
-    : "No topics covered yet.";
+  const notCovered = coveredThemes.length > 0 ? `Skip: ${coveredThemes.join(", ")}.` : "";
+  const policyHint = policy ? `Focus: ${policyToInstruction(policy)}` : "";
 
-  const policyHint = policy ? `\nYour next move: ${policyToInstruction(policy)}` : "";
+  return `You are a feedback interviewer collecting specific feedback on an AI-generated ${submission.inputType}.
 
-  return `You are a skilled, empathetic feedback interviewer. Your job is to collect specific, actionable feedback from a user about ${contentLabel} they received from an AI system.
+Context:
+- User's original prompt: "${(submission.originalPrompt ?? "").slice(0, 250)}"
+- AI output: "${contentSnippet}"
+- Source model: ${submission.sourceModelLabel}
 
-═══════════════════════════════════════════════
-SUBMISSION CONTEXT
-═══════════════════════════════════════════════
-Title: ${submission.title}
-Content Type: ${submission.inputType} | Source Model: ${submission.sourceModelLabel}
-
-Original Prompt Given to AI:
-"${(submission.originalPrompt ?? "").slice(0, 600)}"
-
-${submission.uploadedFileUrl
-  ? `[A file was submitted with this session. If you can see it in the conversation context, reference it specifically in your question.]`
-  : `AI-Generated Output (first 800 chars):\n"${(submission.generatedContent ?? "").slice(0, 800)}"`
-}
-
-═══════════════════════════════════════════════
-FULL CONVERSATION SO FAR
-═══════════════════════════════════════════════
+Conversation so far:
 ${historyBlock}
+User just said: "${latestUserMessage}"
 
-USER: ${latestUserMessage}
+${notCovered} ${policyHint}
 
-═══════════════════════════════════════════════
-INTERVIEW STATE
-═══════════════════════════════════════════════
-Question number: ${questionNumber}
-${coveredBlock}${policyHint}
+Your job: Write ONE short follow-up question (max 2 sentences) that:
+1. Directly references something the user JUST said
+2. Digs deeper into their feedback on the AI output
+3. Never asks two questions at once
 
-═══════════════════════════════════════════════
-YOUR TASK
-═══════════════════════════════════════════════
-Write the NEXT interviewer question. You MUST:
-1. Directly acknowledge or reference something specific from the user's LAST message above.
-2. Ask exactly ONE focused follow-up question — never two questions at once.
-3. Connect your question to the actual submission content (prompt, output, or file) where relevant.
-4. If the user mentioned something vague, probe it for a concrete example.
-5. If the user wants to stop, thank them warmly and set shouldEnd to true.
-6. Keep it conversational and short (1-2 sentences max).
-
-Return ONLY valid JSON — no markdown, no explanation:
-{
-  "reply": "<your single follow-up question that references the user's last answer>",
-  "shouldEnd": false,
-  "topicCovered": "<one of: first_impression|strengths|weaknesses|accuracy|completeness|relevance|clarity|tone|formatting|hallucination|usability|reasoning|improvement_request|other>"
-}`;
+Return ONLY this JSON (no markdown):
+{"reply": "<question>", "shouldEnd": false, "topicCovered": "<first_impression|strengths|weaknesses|accuracy|clarity|tone|formatting|hallucination|usability|improvement_request|other>"}`;
 }
 
 function policyToInstruction(policy) {
