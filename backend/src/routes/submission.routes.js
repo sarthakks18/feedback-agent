@@ -8,11 +8,11 @@ import { requireAuth } from "../middlewares/auth.middleware.js";
 import { HttpError } from "../lib/http-error.js";
 
 const submissionSchema = z.object({
-  title: z.string().min(2).max(200),
-  originalPrompt: z.string().min(10),
-  generatedContent: z.string().min(10),
-  inputType: z.string().min(2).max(50),
-  sourceModelLabel: z.string().min(2).max(100),
+  title: z.string().min(1).max(200),
+  originalPrompt: z.string().min(1),
+  generatedContent: z.string().min(1),
+  inputType: z.string().min(1).max(50),
+  sourceModelLabel: z.string().min(1).max(100),
 });
 
 export const submissionRouter = Router();
