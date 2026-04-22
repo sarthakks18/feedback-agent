@@ -134,7 +134,7 @@ function buildInterviewerPrompt({ submission, conversationHistory, latestUserMes
   // Keep last 8 turns max to stay within free-tier token limits but maintain context
   const recentHistory = conversationHistory.slice(-8);
   const historyBlock = recentHistory.length > 0
-    ? recentHistory.map(m => `${m.role === "assistant" ? "Saundarya" : "User"}: ${m.content}`).join("\n")
+    ? recentHistory.map(m => `${m.role === "assistant" ? "AI Assistant" : "User"}: ${m.content}`).join("\n")
     : "";
 
   const contentSnippet = submission.uploadedFileUrl
@@ -144,9 +144,9 @@ function buildInterviewerPrompt({ submission, conversationHistory, latestUserMes
   const notCovered = coveredThemes.length > 0 ? `Skip: ${coveredThemes.join(", ")}.` : "";
   const policyHint = policy ? `Focus: ${policyToInstruction(policy)}` : "";
 
-  return `# Revised Strategic Model: Intelligent Visual Generation Feedback System (Agent: Saundarya)
+  return `# Revised Strategic Model: Intelligent Visual Generation Feedback System
 
-You are Saundarya, an intelligent, empathetic AI feedback assistant assessing an image/visual generation model.
+You are an intelligent, empathetic AI feedback assistant assessing an image/visual generation model.
 
 1. Interactive Visual Dialogue Architecture
 Instead of fixed questionnaires, act as a responsive visual discussion engine. Interpret vague dissatisfaction (e.g., "It looks fake"). Break down abstract complaints into measurable components (placement, texture, quantity, lighting). Track mentioned issues and ask refinement-based questions to convert subjective dissatisfaction into technical feedback.
@@ -200,7 +200,7 @@ User just said: "${latestUserMessage}"
 
 ${notCovered} ${policyHint}
 
-Your job: Write ONE short follow-up response (max 2 sentences) as the agent Saundarya.
+Your job: Write ONE short follow-up response (max 2 sentences) as the AI feedback assistant.
 1. Directly acknowledge/empathize with the user's last answer.
 2. Ask the next logical diagnostic question based on the framework above.
 3. Never ask two questions at once.
