@@ -20,7 +20,7 @@ const features = [
   {
     icon: Brain,
     title: 'Conversational Evaluation Sessions',
-    desc: 'Each output goes through a structured AI-guided interview that probes quality, coherence, accuracy, and potential improvements across 5 targeted questions.',
+    desc: 'Each output goes through a structured AI-guided interview that probes quality, coherence, accuracy, and potential improvements dynamically based on your responses.',
   },
   {
     icon: BarChart3,
@@ -45,7 +45,7 @@ const workflow = [
     step: '02',
     icon: MessageSquare,
     title: 'AI Conducts the Interview',
-    desc: 'Our system runs an adaptive 5-question evaluation session to collect structured, in-depth quality feedback on the submission.',
+    desc: 'Our system runs an adaptive evaluation session to collect structured, in-depth quality feedback on the submission.',
   },
   {
     step: '03',

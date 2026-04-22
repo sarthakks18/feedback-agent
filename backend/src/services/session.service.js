@@ -152,7 +152,7 @@ export async function addSessionMessage({ sessionId, userId, content }) {
     },
   });
 
-  const completionScore = Math.min(userQuestionCount * 25, 100);
+  const completionScore = Math.min(userQuestionCount * 15, 95);
 
   await prisma.interviewSession.update({
     where: { id: session.id },

@@ -127,7 +127,6 @@ export default function Interview() {
     );
   }
 
-  const totalQuestions = 4;
   const answeredQuestions = messages.filter(message => message.role === 'user').length;
 
   return (
@@ -151,18 +150,8 @@ export default function Interview() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <div className="hidden md:flex items-center gap-2">
-            {[...Array(totalQuestions)].map((_, i) => (
-              <div
-                key={i}
-                className={`w-8 h-1.5 rounded-full transition-all duration-500 ${
-                  i < answeredQuestions ? 'bg-tertiary' : i === answeredQuestions && !isComplete ? 'bg-primary animate-pulse' : 'bg-surface-high'
-                }`}
-              />
-            ))}
-          </div>
           <Badge variant="muted" className="text-xs">
-            Q {Math.min(answeredQuestions + 1, totalQuestions)} / {totalQuestions}
+            Question {answeredQuestions + 1}
           </Badge>
           <Button variant="secondary" className="gap-2 py-2 px-4" onClick={endSession}>
             <Square size={14} />
