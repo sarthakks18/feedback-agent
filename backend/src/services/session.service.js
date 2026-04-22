@@ -163,12 +163,10 @@ export async function addSessionMessage({ sessionId, userId, content }) {
     },
   });
 
-  // End session if user wants to stop or we've hit the question limit
-  if (interviewer.shouldEnd || userQuestionCount >= 4) {
-    const endedBy = interviewer.shouldEnd ? "USER" : "SYSTEM";
-    const endReason = interviewer.shouldEnd
-      ? "User indicated they wanted to stop"
-      : "Structured interview completed";
+  // End session only when the LLM determines it has enough actionable feedback or if the user explicitly wants to stop
+  if (interviewer.shouldEnd) {
+    const endedBy = "SYSTEM";
+    const endReason = "LLM indicated interview is complete or user wanted to stop";
     await endInterviewSession({ sessionId: session.id, userId, endedBy, endReason });
   }
 
