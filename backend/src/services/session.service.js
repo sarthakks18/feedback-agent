@@ -239,11 +239,13 @@ export async function endInterviewSession({ sessionId, userId, endedBy = "USER",
       },
     });
 
-    await tx.sessionMessage.deleteMany({
-      where: {
-        sessionId: session.id,
-      },
-    });
+    // Forget the uploaded file to save database space after feedback is completed
+    if (session.submission.uploadedFileUrl) {
+      await tx.submission.update({
+        where: { id: session.submissionId },
+        data: { uploadedFileUrl: null },
+      });
+    }
 
     return summary;
   });

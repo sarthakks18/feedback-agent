@@ -30,6 +30,12 @@ submissionRouter.post(
     }
 
     const file = req.file;
+    let uploadedFileUrl = null;
+    if (file) {
+      const base64 = file.buffer.toString('base64');
+      uploadedFileUrl = `data:${file.mimetype};base64,${base64}`;
+    }
+
     const submission = await prisma.submission.create({
       data: {
         userId: req.user.id,
@@ -38,7 +44,7 @@ submissionRouter.post(
         generatedContent: parsed.data.generatedContent,
         inputType: parsed.data.inputType,
         sourceModelLabel: parsed.data.sourceModelLabel,
-        uploadedFileUrl: file ? `/uploads/${file.filename}` : null,
+        uploadedFileUrl: uploadedFileUrl,
         uploadedFileName: file?.originalname,
         uploadedFileType: file?.mimetype,
       },

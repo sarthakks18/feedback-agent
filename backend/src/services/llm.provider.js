@@ -13,17 +13,17 @@ const __dirname = path.dirname(__filename);
 // ---------------------------------------------------------------------------
 
 function getApiKey() {
-  const key = env.geminiApiKey || env.llmApiKey;
-  if (!key) throw new HttpError(500, "No Gemini API key configured. Set GEMINI_API_KEY in your environment.");
+  const key = env.groqApiKey || env.llmApiKey;
+  if (!key) throw new HttpError(500, "No API key configured. Set GROQ_API_KEY in your environment.");
   return key;
 }
 
-// Model preference order: env override → flash-lite (higher free-tier quota) → flash
+// Model preference order: env override → fallback models
 const MODEL_PREFERENCE = [
-  env.geminiModel,
+  env.groqModel,
   env.llmModel,
-  "gemini-2.0-flash-lite",
-  "gemini-2.0-flash",
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
 ].filter(Boolean);
 
 function getModel(index = 0) {
@@ -36,28 +36,40 @@ function getModel(index = 0) {
 // Falls back to direct Gemini REST if LLM_API_URL is not set.
 // ---------------------------------------------------------------------------
 
-async function callGeminiRaw(prompt, { temperature = 0.5, isJson = true, modelIndex = 0, filePart = null } = {}) {
+async function callLlmRaw(prompt, { temperature = 0.5, isJson = true, modelIndex = 0, filePart = null } = {}) {
   const apiKey = getApiKey();
-  const model = getModel(modelIndex);
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  let model = getModel(modelIndex);
+  
+  if (filePart && modelIndex === 0) {
+    model = "llama-3.2-11b-vision-preview"; // Override for multimodal
+  }
 
-  const parts = [];
-  if (filePart) parts.push(filePart);
-  parts.push({ text: prompt });
+  const url = env.llmApiUrl || "https://api.groq.com/openai/v1/chat/completions";
+
+  let content;
+  if (filePart) {
+    content = [
+      { type: "text", text: prompt },
+      { type: "image_url", image_url: { url: `data:${filePart.mimeType};base64,${filePart.data}` } }
+    ];
+  } else {
+    content = prompt;
+  }
 
   const body = {
-    contents: [{ role: "user", parts }],
-    generationConfig: {
-      temperature,
-      candidateCount: 1,
-      maxOutputTokens: 256,
-      ...(isJson ? { responseMimeType: "application/json" } : {}),
-    },
+    model: model,
+    messages: [{ role: "user", content }],
+    temperature,
+    // max_tokens: 256,
+    ...(isJson ? { response_format: { type: "json_object" } } : {}),
   };
 
   const resp = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { 
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
     body: JSON.stringify(body),
   });
 
@@ -67,25 +79,25 @@ async function callGeminiRaw(prompt, { temperature = 0.5, isJson = true, modelIn
     if (resp.status === 429 && modelIndex < MODEL_PREFERENCE.length - 1) {
       console.warn(`[llm] 429 on ${model}, retrying with ${getModel(modelIndex + 1)}`);
       await new Promise(r => setTimeout(r, 1500));
-      return callGeminiRaw(prompt, { temperature, isJson, modelIndex: modelIndex + 1, filePart });
+      return callLlmRaw(prompt, { temperature, isJson, modelIndex: modelIndex + 1, filePart });
     }
-    throw new Error(`Gemini API error ${resp.status}: ${errText}`);
+    throw new Error(`LLM API error ${resp.status}: ${errText}`);
   }
 
   const data = await resp.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  const text = data?.choices?.[0]?.message?.content ?? "";
   return text;
 }
 
-async function callGeminiJson(prompt, { temperature = 0.5, filePart = null } = {}) {
-  const text = await callGeminiRaw(prompt, { temperature, isJson: true, filePart });
+async function callLlmJson(prompt, { temperature = 0.5, filePart = null } = {}) {
+  const text = await callLlmRaw(prompt, { temperature, isJson: true, filePart });
   try {
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
     if (start === -1 || end === -1) throw new Error("No JSON found");
     return JSON.parse(text.slice(start, end + 1));
   } catch {
-    throw new HttpError(502, "Gemini returned non-JSON output", text);
+    throw new HttpError(502, "LLM returned non-JSON output", text);
   }
 }
 
@@ -100,24 +112,34 @@ const LOCAL_UPLOADS = path.resolve(__dirname, "../../../uploads");
 async function buildFilePart(submission) {
   if (!submission?.uploadedFileUrl || !submission?.uploadedFileType) return null;
 
-  const filename = submission.uploadedFileUrl.replace(/^\/uploads\//, "");
-  const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL;
-  const uploadsRoot = isVercel ? VERCEL_UPLOADS : LOCAL_UPLOADS;
-  const filePath = path.join(uploadsRoot, filename);
-
-  if (!fs.existsSync(filePath)) {
-    console.warn(`[llm] File not found at ${filePath}, skipping multimodal injection`);
-    return null;
-  }
-
   try {
-    const data = fs.readFileSync(filePath).toString("base64");
-    const mimeType = normalizeMime(submission.uploadedFileType);
-    return { inlineData: { mimeType, data } };
+    // Handle Base64 Data URIs (stored directly in DB for Vercel compatibility)
+    if (submission.uploadedFileUrl.startsWith("data:")) {
+      const parts = submission.uploadedFileUrl.split(",");
+      if (parts.length === 2) {
+        const mimeTypeMatch = parts[0].match(/:(.*?);/);
+        const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : submission.uploadedFileType;
+        const data = parts[1];
+        return { mimeType: normalizeMime(mimeType), data };
+      }
+    }
+
+    // Fallback for legacy local files
+    const filename = submission.uploadedFileUrl.replace(/^\/uploads\//, "");
+    const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL;
+    const uploadsRoot = isVercel ? VERCEL_UPLOADS : LOCAL_UPLOADS;
+    const filePath = path.join(uploadsRoot, filename);
+
+    if (fs.existsSync(filePath)) {
+      const data = fs.readFileSync(filePath).toString("base64");
+      const mimeType = normalizeMime(submission.uploadedFileType);
+      return { mimeType, data };
+    }
   } catch (err) {
-    console.warn(`[llm] Could not read file ${filePath}:`, err.message);
-    return null;
+    console.warn(`[llm] Could not process file part:`, err.message);
   }
+
+  return null;
 }
 
 function normalizeMime(rawMime) {
@@ -186,14 +208,14 @@ Evaluate expectation alignment (spatial logic, physics).
 9. Dynamic Question Generation
 - DO NOT follow any fixed list of questions.
 - Your NEXT question must ALWAYS be directly based on the user's PREVIOUS answer. Dig deeper into whatever they just said.
-- If the user says "The lighting is weird", ask exactly what part of the lighting is weird or how they expected it to look.
+- If the user just gave a 1-5 rating, ask a follow-up about why they gave that specific rating.
 - Start your response with a quick, empathetic acknowledgment of their answer.
 - Ask ONLY ONE focused question at a time.
 - Keep responses natural, conversational, and human (under 3 sentences).
 
 10. Dynamic Conversation End
 - Keep asking dynamic, follow-up questions until you feel you have fully understood their feedback, root cause, and suggestions.
-- THERE IS NO FIXED QUESTION LIMIT. Keep going as long as the user provides meaningful feedback.
+- THERE IS NO FIXED QUESTION LIMIT. You are not restricted to 4 questions. Keep going as long as the user provides meaningful feedback.
 - ONCE you have collected complete, actionable feedback, give a brief final wrap-up thanking the user and set "shouldEnd": true.
 - If the user explicitly asks to stop or end the chat, immediately thank them and set "shouldEnd": true.
 
@@ -360,10 +382,10 @@ Return ONLY valid JSON:
   "feedbackQuality": "<vague|somewhat_actionable|highly_actionable>"
 }`;
 
-      const result = await callGeminiJson(classifyPrompt, { temperature: 0.1 });
+      const result = await callLlmJson(classifyPrompt, { temperature: 0.1 });
       return result;
     } catch (err) {
-      console.warn("[llm] Gemini analysis failed, falling back to local:", err.message);
+      console.warn("[llm] LLM analysis failed, falling back to local:", err.message);
     }
   }
 
@@ -433,7 +455,7 @@ export async function generateInterviewerReply({
       // (file is referenced in the prompt text; actual base64 injection is
       //  skipped on Vercel because files don't persist across serverless calls)
       const filePart = await buildFilePart(submission);
-      const result = await callGeminiJson(prompt, { temperature: 0.6, filePart });
+      const result = await callLlmJson(prompt, { temperature: 0.6, filePart });
 
       return {
         reply: result.reply || "Thank you for sharing that. Could you tell me more?",
@@ -441,7 +463,7 @@ export async function generateInterviewerReply({
         topicCovered: result.topicCovered || "other",
       };
     } catch (err) {
-      console.warn("[llm] Gemini reply generation failed, using fallback:", err.message);
+      console.warn("[llm] LLM reply generation failed, using fallback:", err.message);
     }
   }
 
@@ -472,7 +494,7 @@ ${submission.originalPrompt ? `Detailed Prompt: "${submission.originalPrompt.sli
 Your task is to start the feedback session.
 1. If an image or file is attached/uploaded, analyze it deeply.
 2. Generate an opening message that references specific details you see in the image/output. 
-3. Ask the user ONE focused question about how well it met their target goal, based on what you actually observe in the output.
+3. IMPORTANT: Explicitly ask the user to rate the output from 1 to 5 based on what you observe.
 4. Keep it friendly and concise (max 2-3 sentences).
 5. Only output JSON.
 
@@ -480,12 +502,12 @@ Return ONLY this JSON:
 {"reply": "<your contextual opening message>", "topicCovered": "first_impression"}
 `;
 
-      const result = await callGeminiJson(prompt, { temperature: 0.6, filePart });
+      const result = await callLlmJson(prompt, { temperature: 0.6, filePart });
       if (result && result.reply) {
         return { reply: result.reply, topicCovered: result.topicCovered || "first_impression" };
       }
     } catch (err) {
-      console.warn("[llm] Gemini opening message failed, using fallback:", err.message);
+      console.warn("[llm] LLM opening message failed, using fallback:", err.message);
     }
   }
 
@@ -536,10 +558,10 @@ Return ONLY valid JSON:
   "continueSignalFinal": "stop"
 }`;
 
-      const result = await callGeminiJson(summaryPrompt, { temperature: 0.3 });
+      const result = await callLlmJson(summaryPrompt, { temperature: 0.3 });
       return result;
     } catch (err) {
-      console.warn("[llm] Gemini summary failed, using local builder:", err.message);
+      console.warn("[llm] LLM summary failed, using local builder:", err.message);
     }
   }
 
