@@ -13,17 +13,17 @@ const __dirname = path.dirname(__filename);
 // ---------------------------------------------------------------------------
 
 function getApiKey() {
-  const key = env.groqApiKey || env.llmApiKey;
-  if (!key) throw new HttpError(500, "No API key configured. Set GROQ_API_KEY in your environment.");
+  const key = env.openAiApiKey || env.llmApiKey;
+  if (!key) throw new HttpError(500, "No API key configured. Set OPENAI_API_KEY in your environment.");
   return key;
 }
 
 // Model preference order: env override → fallback models
 const MODEL_PREFERENCE = [
-  env.groqModel,
+  env.openAiModel,
   env.llmModel,
-  "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
+  "gpt-4o-mini",
+  "gpt-4o",
 ].filter(Boolean);
 
 function getModel(index = 0) {
@@ -39,27 +39,15 @@ function getModel(index = 0) {
 async function callLlmRaw(prompt, { temperature = 0.5, isJson = true, modelIndex = 0, filePart = null } = {}) {
   const apiKey = getApiKey();
   let model = getModel(modelIndex);
-  
-  if (filePart && modelIndex === 0) {
-    model = "llama-3.2-11b-vision-preview"; // Override for multimodal
-  }
 
-  const url = env.llmApiUrl || "https://api.groq.com/openai/v1/chat/completions";
+  const url = env.llmApiUrl || "https://api.openai.com/v1/chat/completions";
 
   let content;
-  // Groq vision models do not support JSON mode natively
-  const isVisionModel = model.includes("vision");
-  
   if (filePart) {
-    // If we are falling back to a text-only model, we must strip the image payload
-    if (!isVisionModel && modelIndex > 0) {
-      content = prompt + "\n\n[Note: Image omitted due to model limits]";
-    } else {
-      content = [
-        { type: "text", text: prompt },
-        { type: "image_url", image_url: { url: `data:${filePart.mimeType};base64,${filePart.data}` } }
-      ];
-    }
+    content = [
+      { type: "text", text: prompt },
+      { type: "image_url", image_url: { url: `data:${filePart.mimeType};base64,${filePart.data}` } }
+    ];
   } else {
     content = prompt;
   }
@@ -69,7 +57,7 @@ async function callLlmRaw(prompt, { temperature = 0.5, isJson = true, modelIndex
     messages: [{ role: "user", content }],
     temperature,
     // max_tokens: 256,
-    ...(isJson && !isVisionModel ? { response_format: { type: "json_object" } } : {}),
+    ...(isJson ? { response_format: { type: "json_object" } } : {}),
   };
 
   const resp = await fetch(url, {
