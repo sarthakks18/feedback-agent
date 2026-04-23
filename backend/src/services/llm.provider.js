@@ -47,11 +47,19 @@ async function callLlmRaw(prompt, { temperature = 0.5, isJson = true, modelIndex
   const url = env.llmApiUrl || "https://api.groq.com/openai/v1/chat/completions";
 
   let content;
+  // Groq vision models do not support JSON mode natively
+  const isVisionModel = model.includes("vision");
+  
   if (filePart) {
-    content = [
-      { type: "text", text: prompt },
-      { type: "image_url", image_url: { url: `data:${filePart.mimeType};base64,${filePart.data}` } }
-    ];
+    // If we are falling back to a text-only model, we must strip the image payload
+    if (!isVisionModel && modelIndex > 0) {
+      content = prompt + "\n\n[Note: Image omitted due to model limits]";
+    } else {
+      content = [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: `data:${filePart.mimeType};base64,${filePart.data}` } }
+      ];
+    }
   } else {
     content = prompt;
   }
@@ -61,7 +69,7 @@ async function callLlmRaw(prompt, { temperature = 0.5, isJson = true, modelIndex
     messages: [{ role: "user", content }],
     temperature,
     // max_tokens: 256,
-    ...(isJson ? { response_format: { type: "json_object" } } : {}),
+    ...(isJson && !isVisionModel ? { response_format: { type: "json_object" } } : {}),
   };
 
   const resp = await fetch(url, {
