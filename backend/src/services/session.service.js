@@ -1,7 +1,7 @@
 import prismaPackage from "@prisma/client";
 
 import { prisma } from "../config/prisma.js";
-import { generateInterviewerReply, generateSessionSummary, analyzeUserTurn } from "./llm.provider.js";
+import { generateInterviewerReply, generateSessionSummary, analyzeUserTurn, generateOpeningMessage } from "./llm.provider.js";
 import { HttpError } from "../lib/http-error.js";
 
 const { SessionStatus } = prismaPackage;
@@ -35,16 +35,8 @@ export async function createInterviewSession({ submissionId, userId }) {
     throw new HttpError(404, "Submission not found");
   }
 
-  // Build a contextual opening that references the actual submission
-  const inputLabel =
-    submission.inputType === "image" ? "image"
-    : submission.inputType === "audio" ? "audio recording"
-    : submission.inputType === "video" ? "video"
-    : submission.inputType === "pdf" ? "document"
-    : submission.inputType === "code" ? "code output"
-    : "response";
-
-  const openingMessage = `Hello, and welcome to this feedback session about "${submission.title}". I'm here to collect your thoughts on the AI-generated ${inputLabel} you submitted. To start — what was your very first impression when you saw the output?`;
+  // Generate a contextual opening message (possibly analyzing an uploaded image)
+  const openingMessageObj = await generateOpeningMessage(submission);
 
   const session = await prisma.interviewSession.create({
     data: {
@@ -54,8 +46,8 @@ export async function createInterviewSession({ submissionId, userId }) {
       messages: {
         create: {
           role: "assistant",
-          content: openingMessage,
-          topicCovered: "first_impression",
+          content: openingMessageObj.reply,
+          topicCovered: openingMessageObj.topicCovered,
         },
       },
     },

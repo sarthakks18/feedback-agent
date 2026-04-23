@@ -36,13 +36,17 @@ function getModel(index = 0) {
 // Falls back to direct Gemini REST if LLM_API_URL is not set.
 // ---------------------------------------------------------------------------
 
-async function callGeminiRaw(prompt, { temperature = 0.5, isJson = true, modelIndex = 0 } = {}) {
+async function callGeminiRaw(prompt, { temperature = 0.5, isJson = true, modelIndex = 0, filePart = null } = {}) {
   const apiKey = getApiKey();
   const model = getModel(modelIndex);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+  const parts = [];
+  if (filePart) parts.push(filePart);
+  parts.push({ text: prompt });
+
   const body = {
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    contents: [{ role: "user", parts }],
     generationConfig: {
       temperature,
       candidateCount: 1,
@@ -63,7 +67,7 @@ async function callGeminiRaw(prompt, { temperature = 0.5, isJson = true, modelIn
     if (resp.status === 429 && modelIndex < MODEL_PREFERENCE.length - 1) {
       console.warn(`[llm] 429 on ${model}, retrying with ${getModel(modelIndex + 1)}`);
       await new Promise(r => setTimeout(r, 1500));
-      return callGeminiRaw(prompt, { temperature, isJson, modelIndex: modelIndex + 1 });
+      return callGeminiRaw(prompt, { temperature, isJson, modelIndex: modelIndex + 1, filePart });
     }
     throw new Error(`Gemini API error ${resp.status}: ${errText}`);
   }
@@ -73,8 +77,8 @@ async function callGeminiRaw(prompt, { temperature = 0.5, isJson = true, modelIn
   return text;
 }
 
-async function callGeminiJson(prompt, { temperature = 0.5 } = {}) {
-  const text = await callGeminiRaw(prompt, { temperature, isJson: true });
+async function callGeminiJson(prompt, { temperature = 0.5, filePart = null } = {}) {
+  const text = await callGeminiRaw(prompt, { temperature, isJson: true, filePart });
   try {
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
@@ -208,7 +212,7 @@ User just said: "${latestUserMessage}"
 ${notCovered} ${policyHint}
 
 Your job: Write ONE short follow-up response (max 2-3 sentences) as the AI feedback assistant.
-1. Directly acknowledge with a quick appreciation or apology for the user's last answer.
+1. Directly acknowledge with a quick appreciation or apology for the user's last answer (e.g. "Thanks for pointing that out!", "I'm sorry to hear that.").
 2. Ask the next logical diagnostic question based on the framework above (unless you are ending the session).
 3. If you have gathered all the perfect feedback, summarize slightly, thank them, and set shouldEnd to true.
 4. Never ask two questions at once.
@@ -428,7 +432,8 @@ export async function generateInterviewerReply({
       // For multimodal: if file exists and it's an early turn, append note
       // (file is referenced in the prompt text; actual base64 injection is
       //  skipped on Vercel because files don't persist across serverless calls)
-      const result = await callGeminiJson(prompt, { temperature: 0.6 });
+      const filePart = await buildFilePart(submission);
+      const result = await callGeminiJson(prompt, { temperature: 0.6, filePart });
 
       return {
         reply: result.reply || "Thank you for sharing that. Could you tell me more?",
@@ -442,6 +447,61 @@ export async function generateInterviewerReply({
 
   // Mock / fallback
   return buildFallbackQuestion(submission, analysis, questionNumber, coveredThemes);
+}
+
+// ---------------------------------------------------------------------------
+// EXPORTED: generateOpeningMessage
+// ---------------------------------------------------------------------------
+
+export async function generateOpeningMessage(submission) {
+  if (env.llmProviderMode === "api" || env.llmProviderMode === "ml") {
+    try {
+      const filePart = await buildFilePart(submission);
+      const inputLabel =
+        submission.inputType === "image" ? "image"
+        : submission.inputType === "audio" ? "audio recording"
+        : submission.inputType === "video" ? "video"
+        : submission.inputType === "pdf" ? "document"
+        : submission.inputType === "code" ? "code output"
+        : "response";
+        
+      const prompt = `You are an AI feedback assistant. A user has submitted an AI-generated ${inputLabel} for feedback.
+Target Goal / Prompt: "${submission.title}"
+${submission.originalPrompt ? `Detailed Prompt: "${submission.originalPrompt.slice(0, 300)}"` : ""}
+
+Your task is to start the feedback session.
+1. If an image or file is attached/uploaded, analyze it deeply.
+2. Generate an opening message that references specific details you see in the image/output. 
+3. Ask the user ONE focused question about how well it met their target goal, based on what you actually observe in the output.
+4. Keep it friendly and concise (max 2-3 sentences).
+5. Only output JSON.
+
+Return ONLY this JSON:
+{"reply": "<your contextual opening message>", "topicCovered": "first_impression"}
+`;
+
+      const result = await callGeminiJson(prompt, { temperature: 0.6, filePart });
+      if (result && result.reply) {
+        return { reply: result.reply, topicCovered: result.topicCovered || "first_impression" };
+      }
+    } catch (err) {
+      console.warn("[llm] Gemini opening message failed, using fallback:", err.message);
+    }
+  }
+
+  // Fallback
+  const inputLabel =
+    submission.inputType === "image" ? "image"
+    : submission.inputType === "audio" ? "audio recording"
+    : submission.inputType === "video" ? "video"
+    : submission.inputType === "pdf" ? "document"
+    : submission.inputType === "code" ? "code output"
+    : "response";
+    
+  return {
+    reply: `Hello, and welcome to this feedback session about "${submission.title}". I'm here to collect your thoughts on the AI-generated ${inputLabel} you submitted. To start — what was your very first impression when you saw the output?`,
+    topicCovered: "first_impression"
+  };
 }
 
 // ---------------------------------------------------------------------------
